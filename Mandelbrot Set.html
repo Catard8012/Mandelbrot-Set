@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mandelbrot Set</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            background: #FFFFFF;
+        }
+        h1 {
+            color: black;
+            text-align: center;
+            margin: 10px 0;
+        }
+        #top-controls {
+            margin: 10px;
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+        #bottom-controls {
+            margin: 10px;
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+        canvas {
+            border: 1px solid black;
+            cursor: crosshair;
+        }
+        .active {
+            background-color: lightgreen;
+        }
+        #qualitySlider {
+            width: 200px;
+        }
+    </style>
+</head>
+<body>
+    <!-- Title -->
+    <h1>The Mandelbrot Set</h1>
+
+    <!-- Color Controls -->
+    <div id="top-controls">
+        <label for="color1">Gradient Color 1: </label>
+        <input type="color" id="color1" value="#000764">
+        <label for="color2">Gradient Color 2: </label>
+        <input type="color" id="color2" value="#206bcb">
+        <label for="color3">Gradient Color 3: </label>
+        <input type="color" id="color3" value="#edffff">
+        <label for="color4">Gradient Color 4: </label>
+        <input type="color" id="color4" value="#ffffff">
+        <label for="color5">Gradient Color 5: </label>
+        <input type="color" id="color5" value="#000000">
+    </div>
+
+    <!-- Canvas -->
+    <canvas id="mandelbrotCanvas"></canvas>
+
+    <!-- Bottom Controls -->
+    <div id="bottom-controls">
+        <button id="resetZoom">Reset Zoom</button>
+        <button id="autoZoom">Auto Zoom</button>
+        <button id="coolZoom">Toggle Cool Zoom</button>
+        <label for="qualitySlider">Quality: </label>
+        <input type="range" id="qualitySlider" min="100" max="1000" step="100" value="500">
+    </div>
+
+    <script>
+        const canvas = document.getElementById('mandelbrotCanvas');
+        const ctx = canvas.getContext('2d');
+        const colorInputs = [
+            document.getElementById('color1'),
+            document.getElementById('color2'),
+            document.getElementById('color3'),
+            document.getElementById('color4'),
+            document.getElementById('color5')
+        ];
+        const resetZoomButton = document.getElementById('resetZoom');
+        const autoZoomButton = document.getElementById('autoZoom');
+        const coolZoomButton = document.getElementById('coolZoom');
+        const qualitySlider = document.getElementById('qualitySlider');
+
+        canvas.width = window.innerWidth * 0.9;
+        canvas.height = window.innerHeight * 0.8;
+
+        let minX = -2.5, maxX = 1.0;
+        let minY = -1.0, maxY = 1.0;
+        let maxIterations = 500;
+
+        let isAutoZooming = false;
+        let isCoolZooming = false;
+        let autoZoomInterval;
+        let coolZoomInterval;
+
+        const worker = new Worker(URL.createObjectURL(new Blob([`
+            self.addEventListener('message', function(event) {
+                const { width, height, minX, maxX, minY, maxY, maxIterations, gradientColors } = event.data;
+
+                const imgData = new Uint8ClampedArray(width * height * 4);
+
+                function interpolateColor(colors, factor) {
+                    const n = colors.length - 1;
+                    const scaledFactor = factor * n;
+                    const index = Math.floor(scaledFactor);
+                    const t = scaledFactor - index;
+
+                    const color1 = colors[index];
+                    const color2 = colors[Math.min(index + 1, n)];
+
+                    return {
+                        r: Math.round(color1.r + (color2.r - color1.r) * t),
+                        g: Math.round(color1.g + (color2.g - color1.g) * t),
+                        b: Math.round(color1.b + (color2.b - color1.b) * t)
+                    };
+                }
+
+                function hexToRgb(hex) {
+                    const bigint = parseInt(hex.substring(1), 16);
+                    return {
+                        r: (bigint >> 16) & 255,
+                        g: (bigint >> 8) & 255,
+                        b: bigint & 255
+                    };
+                }
+
+                const gradient = gradientColors.map(hexToRgb);
+
+                for (let x = 0; x < width; x++) {
+                    for (let y = 0; y < height; y++) {
+                        const cx = minX + (maxX - minX) * (x / width);
+                        const cy = minY + (maxY - minY) * (y / height);
+
+                        let zx = 0, zy = 0, iteration = 0;
+                        while (zx * zx + zy * zy <= 4 && iteration < maxIterations) {
+                            const xtemp = zx * zx - zy * zy + cx;
+                            zy = 2 * zx * zy + cy;
+                            zx = xtemp;
+                            iteration++;
+                        }
+
+                        const factor = iteration / maxIterations;
+                        const color = interpolateColor(gradient, factor);
+
+                        const pixelIndex = (y * width + x) * 4;
+                        imgData[pixelIndex] = color.r;
+                        imgData[pixelIndex + 1] = color.g;
+                        imgData[pixelIndex + 2] = color.b;
+                        imgData[pixelIndex + 3] = 255;
+                    }
+                }
+
+                self.postMessage({ imgData, width, height });
+            });
+        `], { type: 'text/javascript' })));
+
+        worker.onmessage = function(event) {
+            const { imgData, width, height } = event.data;
+            const imageData = new ImageData(new Uint8ClampedArray(imgData), width, height);
+            ctx.putImageData(imageData, 0, 0);
+        };
+
+        function drawMandelbrot() {
+            const gradientColors = colorInputs.map(input => input.value);
+
+            worker.postMessage({
+                width: canvas.width,
+                height: canvas.height,
+                minX, maxX, minY, maxY,
+                maxIterations,
+                gradientColors
+            });
+        }
+
+        function resetZoom() {
+            minX = -2.5;
+            maxX = 1.0;
+            minY = -1.0;
+            maxY = 1.0;
+            maxIterations = parseInt(qualitySlider.value, 10);
+            if (coolZoomInterval) clearInterval(coolZoomInterval);
+            if (autoZoomInterval) clearInterval(autoZoomInterval);
+            isCoolZooming = false;
+            isAutoZooming = false;
+            coolZoomButton.classList.remove('active');
+            autoZoomButton.classList.remove('active');
+            drawMandelbrot();
+        }
+
+        function toggleAutoZoom() {
+            if (isAutoZooming) {
+                clearInterval(autoZoomInterval);
+                isAutoZooming = false;
+                autoZoomButton.classList.remove('active');
+            } else {
+                isAutoZooming = true;
+                autoZoomButton.classList.add('active');
+                autoZoomInterval = setInterval(() => {
+                    const zoomFactor = 0.9;
+                    const centerX = (minX + maxX) / 2;
+                    const centerY = (minY + maxY) / 2;
+
+                    const width = (maxX - minX) * zoomFactor;
+                    const height = (maxY - minY) * zoomFactor;
+
+                    minX = centerX - width / 2;
+                    maxX = centerX + width / 2;
+                    minY = centerY - height / 2;
+                    maxY = centerY + height / 2;
+
+                    drawMandelbrot();
+                }, 200);
+            }
+        }
+
+        function toggleCoolZoom() {
+            if (isCoolZooming) {
+                isCoolZooming = false;
+                coolZoomButton.classList.remove('active');
+                cancelAnimationFrame(coolZoomInterval);
+            } else {
+                isCoolZooming = true;
+                coolZoomButton.classList.add('active');
+
+                const targetX = -0.743643887037151;
+                const targetY = 0.131825904205333;
+                const zoomFactor = 0.9;
+
+                let lastTime = performance.now();
+                let accumulatedZoomFactor = 1;
+
+                function coolZoomStep(timestamp) {
+                    if (!isCoolZooming) return;
+
+                    const deltaTime = timestamp - lastTime;
+                    lastTime = timestamp;
+
+                    // Dynamically adjust the zoom steps based on frame time
+                    const stepSize = deltaTime / 16.67; // Normalize to 60 FPS
+                    accumulatedZoomFactor *= Math.pow(zoomFactor, stepSize);
+
+                    const width = (maxX - minX) * accumulatedZoomFactor;
+                    const height = (maxY - minY) * accumulatedZoomFactor;
+
+                    minX = targetX - width / 2;
+                    maxX = targetX + width / 2;
+                    minY = targetY - height / 2;
+                    maxY = targetY + height / 2;
+
+                    drawMandelbrot();
+                    accumulatedZoomFactor = 1; // Reset for the next step
+
+                    coolZoomInterval = requestAnimationFrame(coolZoomStep);
+                }
+
+                coolZoomInterval = requestAnimationFrame(coolZoomStep);
+            }
+        }
+
+        function clickToZoom(event) {
+            if (isCoolZooming) {
+                toggleCoolZoom();
+            }
+
+            const rect = canvas.getBoundingClientRect();
+            const clickX = event.clientX - rect.left;
+            const clickY = event.clientY - rect.top;
+
+            const centerX = minX + (maxX - minX) * (clickX / canvas.width);
+            const centerY = minY + (maxY - minY) * (clickY / canvas.height);
+
+            const zoomFactor = 0.5;
+
+            const width = (maxX - minX) * zoomFactor;
+            const height = (maxY - minY) * zoomFactor;
+
+            minX = centerX - width / 2;
+            maxX = centerX + width / 2;
+            minY = centerY - height / 2;
+            maxY = centerY + height / 2;
+
+            drawMandelbrot();
+        }
+
+        qualitySlider.addEventListener('input', () => {
+            maxIterations = parseInt(qualitySlider.value, 10);
+            drawMandelbrot();
+        });
+
+        resetZoomButton.addEventListener('click', resetZoom);
+        autoZoomButton.addEventListener('click', toggleAutoZoom);
+        coolZoomButton.addEventListener('click', toggleCoolZoom);
+        canvas.addEventListener('click', clickToZoom);
+
+        drawMandelbrot();
+    </script>
+</body>
+</html>
